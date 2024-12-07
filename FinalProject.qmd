@@ -1,0 +1,156 @@
+---
+title: "CFB Project"
+format: html
+editor: visual
+---
+
+Load all packages:
+
+```{r}
+#Load all necessary packages
+library(tidyverse)
+```
+
+Import raw data:
+
+```{r}
+# Vector of years to pull data from
+years <- 2015:2023
+
+# Read and combine files for SP+ ratings data set
+sp_ratings <- years |>
+  map(~ read.csv(paste0(.x, "SPrating.csv"))) |>
+  bind_rows() |>
+  mutate(Team = str_trim(Team))  # Trim white space in Team names
+
+# Read and combine files for expected wins data set
+expected_wins <- years |>
+  map(~ read.csv(paste0(.x, "expectedwins.csv"))) |>
+  bind_rows() |>
+  mutate(Team = str_trim(Team))  # Trim white space in Team names
+
+# Read and combine files for team talent composite rankings data set
+team_talent_rankings <- years |>
+  map(~ read.csv(paste0(.x, "teamtalent.csv"))) |>
+  bind_rows() |>
+  mutate(School = str_trim(School)) |>
+  rename(Team = School)  # Standardize column name to 'Team'
+
+# Read and combine files for team recruiting rankings
+team_recruiting_rankings <- years |>
+  map(~ read.csv(paste0(.x, "recruiting.csv"))) |>
+  bind_rows() |>
+  mutate(Team = str_trim(Team))
+```
+
+Create new column that will allow us to join data sets and merge them.
+
+```{r}
+# Add unique identifier "team_year_id" to each data set by combining the Year and Team columns
+
+sp_ratings <- sp_ratings |>
+  mutate(team_year_id = paste0(Year, Team))
+
+expected_wins <- expected_wins |>
+  mutate(team_year_id = paste0(Year, Team))
+
+team_talent_rankings <- team_talent_rankings |>
+  mutate(team_year_id = paste0(Year, Team))
+
+team_recruiting_rankings <- team_recruiting_rankings |>
+  mutate(team_year_id = paste0(Year, Team))
+
+```
+
+Determine which teams have been in the FBS from 2015-2023 (all 9 years), so we can include them in our analysis.
+
+```{r}
+#Import list of FBS teams from 2015 to 2023
+
+years <- 2015:2023
+
+fbs_teams_list <- years |>
+  map(~ read.csv(paste0(.x, "fbsteams.csv"))) |>
+  bind_rows() |>
+  select(School)
+
+#Find teams that were in FBS all 9 years
+
+fbs_teams_counts <- fbs_teams_list |>
+  group_by(School) |>
+  summarize(count = n(), .groups = "drop") |>
+  filter(count == 9)
+
+# Extract a vector of those team names
+
+consistent_fbs_teams <- fbs_teams_counts |> pull(School)  
+
+#Filter each dataset to only include teams that were FBS from 2015-2023. 
+
+#Note: The 2020 UConn and 2020 Old Dominion teams are excluded since their seasons were cancelled due to COVID-19, and thus they have missing data.
+
+fbs_sp_ratings <- sp_ratings |>
+  filter(Team %in% consistent_fbs_teams, !(Team %in% c("UConn", "Old Dominion") & Year == 2020))
+
+fbs_expected_wins <- expected_wins |>
+  filter(Team %in% consistent_fbs_teams, !(Team %in% c("UConn", "Old Dominion") & Year == 2020))
+
+fbs_talent_rankings <- team_talent_rankings |>
+  filter(Team %in% consistent_fbs_teams, !(Team %in% c("UConn", "Old Dominion") & Year == 2020))
+
+fbs_recruiting_rankings <- team_recruiting_rankings |>
+  filter(Team %in% consistent_fbs_teams, !(Team %in% c("UConn", "Old Dominion") & Year == 2020))
+
+```
+
+We will now use the unique identifier, 'team_year_id', to combine the datasets into one. A full_join will be used to preserve all data, ensuring that no information is lost. Any extra columns resulting from the join will be addressed in the following steps.
+
+```{r}
+
+#Perform a full join across data sets on "team_year_id"
+
+final_combined <- fbs_sp_ratings |>
+  full_join(fbs_expected_wins, by = "team_year_id") |>
+  full_join(fbs_talent_rankings, by = "team_year_id") |>
+  full_join(fbs_recruiting_rankings, by = "team_year_id")
+```
+
+It's now time to select the columns from our combined data set that we want to keep for our statistical analysis. They will also be renamed for clarity.
+
+```{r}
+filtered_data <- final_combined |>
+  select(team_year_id, Year.x, Team.x, Rating, Conference.y, Sos, Offense.Ranking, Offense.Rating, Defense.Ranking, Defense.Rating, ExpectedWins, Total.Games, Total.Wins, Total.Losses, Talent, Rank, Points) |>
+  rename(
+    year = Year.x,
+    team = Team.x,
+    sp_rating = Rating,
+    conference = Conference.y,
+    sos = Sos,
+    offense_ranking = Offense.Ranking,
+    offense_rating = Offense.Rating,
+    defense_ranking = Defense.Ranking,
+    defense_rating = Defense.Rating,
+    expected_wins = ExpectedWins,
+    total_games = Total.Games,
+    total_wins = Total.Wins,
+    total_losses = Total.Losses,
+    talent_rating = Talent,
+    recruiting_rank = Rank,
+    recruiting_points = Points
+  )
+```
+
+Now that we have the data that we want, we can begin to perform some EDA, check assumptions, and then hopefully fit a linear model that will help us explain the
+
+```{r}
+ggplot(data=filtered_data, aes(x=talent_rating, y=sp_rating)) +
+  geom_point()
+```
+
+```{r}
+ggplot(data=filtered_data, aes(x=sos, y=sp_rating)) + geom_point()
+```
+
+```{r}
+
+```
