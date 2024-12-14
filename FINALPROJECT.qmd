@@ -1,0 +1,565 @@
+---
+title: "From Talent to Triumph: Analyzing Recruiting Rankings and College Football Performance"
+author: "Nathan Gordon, Winston Platt"
+format: 
+  html: 
+    embed-resources: true
+editor: visual
+---
+
+**Note for Grading:**
+
+The data import and wrangling section require the download of approximately 40 CSV files, since we are pulling data from many sources. For ease of grading, instead of requiring the download of all of these files, we've exported the final filtered_data.csv file, which contains the necessary data after the wrangling steps.
+
+To load the data, please run the following code chunks at the beginning of the analysis:
+
+```{r}
+filtered_data <- read.csv("filtered_data.csv")
+```
+
+```{r}
+#Load all necessary packages
+library(tidyverse)
+library(car)
+library(bestglm)
+library(ggplot2)
+library(ggfortify)
+```
+
+Once the data is loaded, you can proceed with the code in the EDA section as usual, bypassing the need to run the code for the data import and wrangling steps.
+
+# Project Introduction
+
+College football is one of the most popular sports in the country, with tens of thousands of fans packing stadiums every fall weekend and even more tuning in on TV. Beyond the games, recruiting rankings generate significant attention, as fans and teams eagerly track which high school athletes are joining their programs and how highly they are rated. The assumption is straightforward: the more 4- or 5-star recruits a team has, the better they will perform. But is that really true? Are team recruiting rankings a reliable predictor of on-field success?
+
+To explore this question, we analyzed the relationship between talent recruiting rankings and team performance using Bill Connelly’s SP+ rankings. Our study involved collecting data from multiple websites across nine seasons, building statistical models, and creating visualizations to examine the relationships among various team statistics. Through this analysis, we aimed to determine whether recruiting rankings are a strong indicator of success, identify teams or conferences that consistently overperform or underperform relative to their talent, and uncover other noteworthy trends.
+
+# Data Description
+
+The dataset from collegefootballdata.com includes a wide range of information, such as game results, player and team statistics, SP+ ratings, expected wins, conferences, team talent composite rankings, play-by-play data, matchup history, and more. Different data types cover varying time periods: recruiting and box score data go back to the early 2000s, while game results date back to the first college football game played on November 6, 1869, between Rutgers and Princeton. This extensive data is freely available for use.
+
+A key component of this dataset is the historical SP+ ratings and rankings, a performance metric that accounts for tempo and a team’s strength of schedule. These ratings will be used to rank all 100+ FBS teams and compare them against recruiting rankings to assess the predictive power of recruiting data for team success. The recruiting and talent rankings are sourced from 247sports.com, which rates college football recruits and assigns a point value to each recruit. These points are then summed to generate a team’s national recruiting talent ranking.
+
+Below is a dictionary of the data we will be using:
+
+| Column Name | Description | Data Type | Additional Notes |
+|----|----|----|----|
+| year | Season of football the data references. | Integer | May include games from the next year (The 2023 season includes games played in 2024). |
+| team | Name of the team. | Categorical | Full name or commonly used abbreviation. |
+| sp_rating | Overall SP+ rating, a measure of a team's efficiency. | Float | SP+ is adjusted for tempo and opponents. |
+| conference | Football conference in which the teams competes in. | Categorical | Conference the team competed in for that specific year. |
+| offense_ranking | SP+ ranking of the team's offense. | Ordinal | 1 = best offensive rating, 2 = second best, etc. |
+| offense_rating | SP+ rating of the team's offense. | Float | Higher number = better offense |
+| defense_ranking | SP+ ranking of the team's defense. | Ordinal | 1 = best defensive rating, 2 = second best, etc. |
+| defense_rating | SP+ rating of the team's defense | Float | Higher number = better defense |
+| expected_wins | The number of expected wins before the start of the season. | Float | Based on predictive metrics. |
+| total_games | Total number of games played in. | Integer | Not all college football teams play the same number of games. |
+| total_wins | Total number of games won. | Integer | total_wins + total_losses = total_games |
+| total_losses | Total number of games lost. | Integer | total_wins + total_losses = total_games |
+| talent_rating | Overall talent rating of the team based on recruiting ranks of individual players. | Float | Based on 247Sports’ College Football Team Talent Composite metric. |
+| recruiting_rank | National ranking of the team's incoming recruiting class. | Ordinal | 1 = best recruiting class, 2 = second best, etc. |
+| recruiting_points | Composite score of the team's recruiting class. | Float | Sum of the points received from each commit and their individual ranking. |
+
+# Data Import
+
+We imported multiple CSV files, each containing a different dataset, and merged them using a team-year identifier (a combination of team name and the season year). We merged the data for the years 2015-2023, including variables such as SP+ ratings, expected wins (derived from SP+ ratings), team talent composite rankings, and team recruiting rankings. To ensure the data remained unique for each team-season combination, we treated each team's performance for a given year separately (e.g., the BYU football team in 2020 is distinct from the BYU team in 2021, despite having many returning players). The following code outlines the import process, with comments explaining each step:
+
+```{r}
+# Create a vector of years to pull data from
+years <- 2015:2023
+
+# Read and combine files for SP+ ratings data set
+sp_ratings <- years |>
+  map(~ read.csv(paste0(.x, "SPrating.csv"))) |>
+  bind_rows() |>
+  mutate(Team = str_trim(Team))  # Trim white space in Team names
+
+# Read and combine files for expected wins data set
+expected_wins <- years |>
+  map(~ read.csv(paste0(.x, "expectedwins.csv"))) |>
+  bind_rows() |>
+  mutate(Team = str_trim(Team))  # Trim white space in Team names
+
+# Read and combine files for team talent composite rankings data set
+team_talent_rankings <- years |>
+  map(~ read.csv(paste0(.x, "teamtalent.csv"))) |>
+  bind_rows() |>
+  mutate(School = str_trim(School)) |>
+  rename(Team = School)  # Standardize column name to 'Team'
+
+# Read and combine files for team recruiting rankings
+team_recruiting_rankings <- years |>
+  map(~ read.csv(paste0(.x, "recruiting.csv"))) |>
+  bind_rows() |>
+  mutate(Team = str_trim(Team))
+```
+
+# Data Wrangling
+
+For our analysis, we focused on teams (and their respective conferences), along with their overall, offensive, and defensive SP+ ratings, total wins and losses, and talent and recruiting rankings for the years 2015-2023. We included recruiting talent data starting from 2015 and excluded the 2024 season, as it is incomplete. During our data wrangling, we removed teams that transitioned from FCS (a lower Division I level) to FBS (the highest division in college football), as well as one team that moved from FBS to FCS (Idaho). Given the significant conference realignment in recent years, we also had to account for teams switching conferences. These steps are outlined in the following code chunks.
+
+The first step in our wrangling process involved creating a unique identifier for each observation, enabling us to efficiently join datasets.
+
+```{r}
+# Add unique identifier "team_year_id" to each data set by combining the Year and Team columns
+
+sp_ratings <- sp_ratings |>
+  mutate(team_year_id = paste0(Year, Team))
+
+expected_wins <- expected_wins |>
+  mutate(team_year_id = paste0(Year, Team))
+
+team_talent_rankings <- team_talent_rankings |>
+  mutate(team_year_id = paste0(Year, Team))
+
+team_recruiting_rankings <- team_recruiting_rankings |>
+  mutate(team_year_id = paste0(Year, Team))
+
+```
+
+We then determined which teams have been in the FBS from 2015-2023 (all 9 years), so we can include them in our analysis.
+
+```{r}
+#Import list of FBS teams from 2015 to 2023
+
+years <- 2015:2023
+
+fbs_teams_list <- years |>
+  map(~ read.csv(paste0(.x, "fbsteams.csv"))) |>
+  bind_rows() |>
+  select(School)
+
+#Find teams that were in FBS all 9 years
+
+fbs_teams_counts <- fbs_teams_list |>
+  group_by(School) |>
+  summarize(count = n(), .groups = "drop") |>
+  filter(count == 9)
+
+# Extract a vector of those team names
+
+consistent_fbs_teams <- fbs_teams_counts |> pull(School)  
+
+#Filter each dataset to only include teams that were FBS from 2015-2023. 
+
+#Note: The 2020 UConn and 2020 Old Dominion teams are excluded since their seasons were cancelled due to COVID-19, and thus they have missing data.
+
+fbs_sp_ratings <- sp_ratings |>
+  filter(Team %in% consistent_fbs_teams, !(Team %in% c("UConn", "Old Dominion") & Year == 2020))
+
+fbs_expected_wins <- expected_wins |>
+  filter(Team %in% consistent_fbs_teams, !(Team %in% c("UConn", "Old Dominion") & Year == 2020))
+
+fbs_talent_rankings <- team_talent_rankings |>
+  filter(Team %in% consistent_fbs_teams, !(Team %in% c("UConn", "Old Dominion") & Year == 2020))
+
+fbs_recruiting_rankings <- team_recruiting_rankings |>
+  filter(Team %in% consistent_fbs_teams, !(Team %in% c("UConn", "Old Dominion") & Year == 2020))
+
+```
+
+We will now use the unique identifier, 'team_year_id', to combine the datasets into one. A full join will be used to preserve all data, ensuring that no information is lost. Any extra columns resulting from the join will be addressed in the following steps.
+
+```{r}
+#Perform a full join across data sets on "team_year_id"
+
+final_combined <- fbs_sp_ratings |>
+  full_join(fbs_expected_wins, by = "team_year_id") |>
+  full_join(fbs_talent_rankings, by = "team_year_id") |>
+  full_join(fbs_recruiting_rankings, by = "team_year_id")
+```
+
+We now select the columns from our combined data set that we want to keep for our statistical analysis. They will also be renamed for clarity.
+
+```{r}
+filtered_data <- final_combined |>
+  select(team_year_id, Year.x, Team.x, Rating, Conference.y, Offense.Ranking, Offense.Rating, Defense.Ranking, Defense.Rating, ExpectedWins, Total.Games, Total.Wins, Total.Losses, Talent, Rank, Points) |>
+  rename(
+    year = Year.x,
+    team = Team.x,
+    sp_rating = Rating,
+    conference = Conference.y,
+    offense_ranking = Offense.Ranking,
+    offense_rating = Offense.Rating,
+    defense_ranking = Defense.Ranking,
+    defense_rating = Defense.Rating,
+    expected_wins = ExpectedWins,
+    total_games = Total.Games,
+    total_wins = Total.Wins,
+    total_losses = Total.Losses,
+    talent_rating = Talent,
+    recruiting_rank = Rank,
+    recruiting_points = Points
+  )
+```
+
+At the conclusion of our data wrangling, we have a tidy data set that is much more equipped for data analysis and modeling. This allows us to move into the next stages of our analysis.
+
+# Exploratory Data Analysis
+
+The main goal of this project is to determine whether a team’s recruiting talent rankings are a reliable predictor of on-field success, measured by SP+ ratings. We also aimed to identify trends where certain teams or conferences consistently underperform or overperform relative to their talent. For example, we’re interested in whether bottom-tier SEC teams or the SEC as a whole underperform, while conferences like the MWC and Big 12 may have teams that overperform. Additionally, we sought to explore whether teams known for player development, such as BYU and Boise State, achieve success through coaching rather than raw talent. To highlight these patterns, we created scatterplots to examine the relationships between key variables.
+
+Before diving into data visualization, we reviewed a summary of our curated dataset to identify any anomalies or unexpected findings.
+
+```{r}
+summary(filtered_data)
+```
+
+Everything appears normal, as there are no missing values in our dataset, and all variables look as expected.
+
+As mentioned earlier, our primary focus is on the relationship between the SP+ rating (which reflects overall team performance) and the talent rating. Below is a scatterplot visualizing the relationship between these two variables.
+
+```{r}
+# SP Rating vs. Talent Rating
+ggplot(filtered_data, aes(x = talent_rating, y = sp_rating)) + 
+  geom_point(alpha = 0.6) +
+  labs(title = "SP Rating vs Talent Rating",
+       x= "Talent Rating",
+       y = "SP+ Rating")
+```
+
+As seen in the scatterplot, there appears to be a linear relationship between talent rating and SP+ rating.
+
+This raises the question of whether a similar relationship exists between talent rating and recruiting points. That relationship is explored below.
+
+```{r}
+# SP Rating vs Recruiting Points
+ggplot(filtered_data, aes(x = recruiting_points, y = sp_rating)) + 
+  geom_point(alpha = 0.6) + 
+  labs(title = "SP Rating vs Recruiting Points",
+       x = "Recruiting Points",
+       y = "SP+ Rating")
+```
+
+The similarity between scatterplots likely indicates a highly correlated relationship between recruiting points and talent rating. We can calculate the correlation between these two variables to see if this is indeed the case.
+
+```{r}
+# Calculate the correlation between talent_rating and recruiting_points
+cor(filtered_data$talent_rating, filtered_data$recruiting_points)
+```
+
+As expected, the correlation between the two variables is quite high. This high correlation is seen visually below.
+
+```{r}
+# Talent Rating vs Recruiting Points
+ggplot(filtered_data, aes(x = talent_rating, y = recruiting_points)) + 
+  geom_point(alpha = 0.6) + 
+  labs(title = "Talent Rating vs Recruiting Points",
+       x = "Talent Rating",
+       y = "Recruiting Points")
+```
+
+We are also interested in visualizing the distribution of some of the key variables in our dataset to see if they follow a normal distribution.
+
+```{r}
+# Histogram for continuous variables
+ggplot(filtered_data, aes(x = sp_rating)) + geom_histogram(bins = 30, fill = "blue", color = "black") + labs(title = "Distribution of SP Rating", x = "SP+ Rating", y = "Count")
+
+ggplot(filtered_data, aes(x = talent_rating)) + geom_histogram(bins = 30, fill = "green", color = "black") + labs(title = "Distribution of Talent Rating", x = "Talent Rating", y = "Count")
+
+ggplot(filtered_data, aes(x = recruiting_points)) + geom_histogram(bins = 30, fill = "orange", color = "black") + labs(title = "Distribution of Recruiting Points", x = "Recruiting Points", y = "Count")
+```
+
+Each of these variables appears to be roughly normally distributed, though with slight variations in skew and shape. Nevertheless, this suggests that constructing a linear regression model with these variables should be feasible.
+
+Next, we can explore the relationship between Expected Wins and SP+ rating. Intuitively, we expect a positive correlation between the two, which is supported by the scatterplot below.
+
+```{r}
+ggplot(data=filtered_data, aes(x=expected_wins, y=sp_rating)) + geom_point(alpha=0.6) + labs(
+  title = "Expected Wins vs SP+ rating",
+  x = "Expected Wins",
+  y = "SP+ Rating"
+)
+```
+
+We can also check the distribution of SP+ ratings and talent ratings by conference. We will focus on the "Power 5" conferences, which are the ACC, Big Ten, Big 12, Pac-12, and SEC. Boxplots will help us visualize these distributions.
+
+```{r}
+# Define the Power 5 conferences
+power_five_conferences <- c("ACC", "Big Ten", "Big 12", "Pac-12", "SEC")
+
+# Filter data to include only Power 5 conferences
+filtered_power_five <- filtered_data |>
+  filter(conference %in% power_five_conferences)
+
+# Boxplot for Talent Rating by Power 5 Conference
+ggplot(filtered_power_five, aes(x = conference, y = talent_rating)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Talent Rating by Power 5 Conference",
+       x = "Conference", 
+       y = "Talent Rating") +
+  theme_minimal()
+```
+
+```{r}
+# Boxplot for SP+ Rating by Power 5 Conference
+ggplot(filtered_power_five, aes(x = conference, y = sp_rating)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "SP+ Rating by Power 5 Conference",
+       x = "Conference",
+       y = "SP+ Rating") +
+  theme_minimal()
+```
+
+Additionally, we can visualize the average SP+ ratings over time for each of the Power 5 conferences.
+
+```{r}
+# Calculate the average SP+ rating by year for each conference
+avg_sp_by_conference_year <- filtered_power_five |>
+  group_by(conference, year) |>
+  summarise(avg_sp_rating = mean(sp_rating, na.rm = TRUE), .groups = "drop")
+
+# Plot average SP+ ratings by year for each conference
+ggplot(avg_sp_by_conference_year, aes(x = year, y = avg_sp_rating, color = conference)) +
+  geom_line(linewidth = 1) +  # Line plot for trends over time
+  labs(title = "Average SP+ Ratings by Year for Power Five Conferences", 
+       x = "Year", 
+       y = "Average SP+ Rating") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+These scatterplots, boxplots, and other visualizations give us an initial idea of the relationships between variables in our data. We can now move on to the modeling section of our analysis.
+
+# Modeling
+
+## Simple Linear Model
+
+We begin by fitting a simple linear model to assess how well talent_rating can predict SP+ rating by itself.
+
+```{r}
+simple_model <- lm(sp_rating ~ talent_rating, data = filtered_data)
+```
+
+### *Check Model Assumptions*
+
+We will check some important model assumptions for our simple model.
+
+### Linearity
+
+While the scatterplots shown in the section above suggest a linear relationship between talent rating and SP+ rating, we can further assess linearity by examining a residuals vs. fitted values plot.
+
+```{r}
+autoplot(simple_model, which = 1, ncol = 1, nrow = 1) +
+  scale_y_continuous(limits = c(-3.8, 3.8)) +
+  scale_x_continuous(limits = c(-0.5, 3.5)) +
+  theme(aspect.ratio = 1)
+```
+
+This plot shows that the linearity assumption appears to hold.
+
+### Independence
+
+The independence assumption is fundamentally violated in this data since we are working with time series data, where the values from one year can affect the values in the subsequent year. Given this violation, we have chosen to proceed with fitting standard OLS regression models rather than more complex models like ARIMA. While this violation limits our ability to make precise statistical inferences, we can still evaluate how well our model explains the performance of teams based on their SP+ rating.
+
+### Normality
+
+```{r}
+# Plot histogram of residuals
+hist(residuals(simple_model), 
+     main = "Histogram of Residuals", 
+     xlab = "Residuals", 
+     col = "lightblue", 
+     border = "black")
+
+```
+
+The histogram of the residuals suggests they are fairly normally distributed. Although there is some slight skew, it is not concerning enough to conclude that the normality assumption is violated.
+
+### Equal Variance
+
+```{r}
+# Plot residuals vs. fitted values
+autoplot(simple_model, which = 1, ncol = 1, nrow = 1) +
+  scale_y_continuous(limits = c(-3.8, 3.8)) +
+  scale_x_continuous(limits = c(-0.5, 3.5)) +
+  theme(aspect.ratio = 1)
+
+```
+
+The residuals vs. fitted values plot shows that the assumption of equal variance appears to be met, and there are no obvious signs of heteroscedasticity.
+
+Due to most our assumptions being met, other than independence, we can look at the output of our model.
+
+## *Model Output*
+
+```{r}
+summary(simple_model)
+```
+
+As we can see, talent_rating is statistically significant and explains a substantial portion of the variance in SP+ rating. The R-squared value of approximately 0.48 indicates that around 48% of the variation in SP+ rating can be explained by talent rating.
+
+## Multiple Linear Regression Model
+
+Is talent rating the only variable that can explain a teams performance? We now aim to explore if our model can be improved by include some of the other variables in our model.
+
+To do so we will perform a variable selection method to avoid overfitting our model. This will allow us to make accurate predictions without including too much information which could confound our ability to understand which variables are the most important.
+
+The method we will use is known as the "best subsets" method, which finds the optimal model and should give us more predictive power than the simple model we originally fit.
+
+```{r}
+#Exclude non-predictive variables from data before applying variable selection
+
+filtered_data_for_model <- filtered_data |>
+  select(-team_year_id, -team, -year)
+
+filtered_data_for_model$conference <- as.factor(filtered_data_for_model$conference)
+
+
+#Proceed to variable selection
+
+best_subsets_bic <- bestglm(filtered_data_for_model,
+                            IC = "BIC",
+                            method = "exhaustive")
+
+# View variables included in the top 10 models
+best_subsets_bic$BestModel
+
+# View a summary of the "best" model
+summary(best_subsets_bic$BestModel)
+```
+
+The results from the variable selection procedure show that we need to include the following variables in our expanded model: conference, expected_wins, total_games, talent_rating, and recruiting_rank.
+
+We will now fit the multiple linear regression model, check assumptions again, and see if it provides a better fit than our original simple model.
+
+```{r}
+#Fit the multiple linear regression model based on best-subsets variable selection procedure
+expanded_model <- lm(sp_rating ~ conference + expected_wins + total_games + talent_rating + recruiting_rank,
+   data = filtered_data)
+```
+
+### *Check Multiple Linear Regression Model Assumptions*
+
+### Linearity & Equal Variance
+
+```{r}
+# Residuals vs. Fitted Values Plot for the expanded model
+autoplot(expanded_model, which = 1, ncol = 1, nrow = 1) +
+  scale_y_continuous(limits = c(-10, 10)) +  
+  scale_x_continuous(limits = c(-0.5, 3.5)) + 
+  theme(aspect.ratio = 1)
+```
+
+The linearity assumption still appears to be satisfied quite well. The equal variance assumption also appears to be met.
+
+### Independence
+
+As with the simple linear regression model, the independence assumption is violated, which limits our inferential ability. As such, our primary goal will be to assess model fit using metrics such as R-squared.
+
+### Normality
+
+```{r}
+# Plot histogram of residuals
+hist(residuals(expanded_model), 
+     main = "Histogram of Residuals", 
+     xlab = "Residuals", 
+     col = "lightblue", 
+     border = "black")
+
+```
+
+This histogram shows that the residuals are quite normally distributed, meaning that the normality assumption is adequately satisfied.
+
+### Influential points
+
+```{r}
+cd_cont_pos <- function(leverage, level, model) {sqrt(level*length(coef(model))*(1-leverage)/leverage)}
+cd_cont_neg <- function(leverage, level, model) {-cd_cont_pos(leverage, level, model)}
+
+cd_threshold <- 0.5
+autoplot(expanded_model, which = 5) +
+  stat_function(fun = cd_cont_pos,
+                args = list(level = cd_threshold, model = expanded_model),
+                xlim = c(0, 0.6), lty = 2, colour = "red") +
+  stat_function(fun = cd_cont_neg,
+                args = list(level = cd_threshold, model = expanded_model),
+                xlim = c(0, 0.6), lty = 2, colour = "red") +
+  scale_y_continuous(limits = c(-4, 4))
+```
+
+It appears there are no influential points, satisfying this important model assumption.
+
+### Multicollinearity
+
+```{r}
+vif(expanded_model)
+vif(expanded_model) |> max()
+vif(expanded_model) |> mean()
+```
+
+There is no big concern that there is any multicollinearity based on the variance inflation factors. Typically if we have a VIF over 10 or a mean VIF over 4, we would want to investigate further. However, we see that neither of these benchmarks give us cause for concern.
+
+Having checked our assumptions, we are now ready to explore the model output.
+
+## *Model Output*
+
+```{r}
+summary(expanded_model)
+```
+
+The new model appears to do much better at explaining the success a team will have. The high R-squared value of about 0.87 suggests that a high proportion of a teams success can be explained according to the factors in this model.
+
+This gives us important insight into the relevance of factors such as conference, expected win totals, and recruiting ranks. Though our P-values may not be extremely reliable due to the independence assumption violation, it still appears that many of the predictors included in our model are statistically significant and help explain college football team performance.
+
+## Residual Analysis
+
+We are interested in seeing which teams overperform according to our model. In order to assess this, we will look at the residuals from the model and see which teams have the highest residuals. We will also see which teams underperform according to our model.
+
+```{r}
+#Extract residuals from our model
+residuals_data <- data.frame(team = filtered_data$team, 
+                             year = filtered_data$year, 
+                             residuals = residuals(expanded_model))
+```
+
+```{r}
+# Calculate mean residuals by team
+mean_residuals <- residuals_data |>
+  group_by(team) |>
+  summarize(mean_residual = mean(residuals))
+
+# View first few rows
+head(mean_residuals)
+
+```
+
+The output above shows us the average under or overperformance for teams in our model from the years 2015-2023. Negative values indicate underperformance, and positive values indicate overperformance. By sorting these in ascending and descending order, we can determine which teams tend to perform better than expected.
+
+```{r}
+# Sort by mean residuals in descending order (highest) and ascending order (lowest)
+
+top_5_highest <- mean_residuals |>
+  arrange(desc(mean_residual)) |>
+  head(5)
+
+top_5_lowest <- mean_residuals |>
+  arrange(mean_residual) |>
+  head(5)
+
+# View the results
+top_5_highest
+top_5_lowest
+
+```
+
+As seen above, the 5 teams that underperformed the most according to SP+ rating and our model are the following:
+
+Florida International, Northwestern, Kansas, Massachusetts and Rutgers.
+
+The 5 teams who overperformed the most are:
+
+Western Kentucky, Kansas State, Air Force, BYU and Ohio State
+
+# Sharing Key Takeaways
+
+These results are quite interesting to us, especially considering our affinity for BYU football - seeing them listed as one of the top five overperformers is fascinating. Further data exploration in the future would be insightful and would allow us to dive deeper into the reasons behind these findings. As noted before, construction of more advanced models, particularly a model adapted for time-series data, may allow us to make more accurate statistical inference. Despite these limitations, we do have some interesting conclusions.
+
+After performing statistical tests to evaluate our model’s effectiveness in predicting team performance, we concluded that talent recruiting rankings are indeed a strong indicator of team success. The base model, which used recruiting rankings as the sole predictor of SP+ ratings, explained 48% of the variation. However, when we incorporated additional variables, such as conference and expected wins, the model’s explanatory power increased significantly, accounting for approximately 87% of the variation—a substantial improvement. While other factors, such as coaching quality, returning production (which may reflect team chemistry or cohesion), communication, experience, and team resources, also play a role in a team’s success, our model provides a solid foundation for predicting team ratings.
+
+Looking back on our project, there are areas where we could improve and additional ideas we could explore in future analyses to achieve more detailed and accurate results. One challenge in college football is that, with over 130 teams at the FBS level and only 12 regular-season games for most teams (plus potential postseason games), win-loss records alone are insufficient for evaluating team performance. Incorporating a variable for strength of schedule (SOS) would allow us to better assess each team’s relative strength. Additionally, a limitation of our analysis is that SP+ is primarily a predictive measure rather than a résumé-based metric. ESPN’s Football Power Index (FPI), another predictive tool, could serve as an alternative metric for comparison. While we considered using the BCS system—a combination of computer rankings and polls once used to determine championship contenders—it was highly controversial, so we opted against it.
+
+Despite these limitations, our model demonstrates strong predictive capabilities for team ratings.
