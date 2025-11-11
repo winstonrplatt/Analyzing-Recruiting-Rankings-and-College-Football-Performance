@@ -1,0 +1,101 @@
+---
+title: "Analyzing Recruiting Rankings and College Football Performance"
+author: "Winston Platt"
+date: "November 2025"
+format: html
+---
+
+# Overview
+
+This **simplified showcase** demonstrates an analysis of how college football recruiting rankings relate to on-field performance. The original project was done in partnership with Nate Gordon in Fall 2024, but has since been updated. 
+
+
+```{r}
+library(tidyverse)
+library(broom)
+library(scales) 
+```
+
+# Data Preparation
+
+```{r}
+df <- read_csv("filtered_data.csv")
+
+glimpse(df)
+
+df <- df %>%
+  mutate(
+    recruiting_rank = as.numeric(recruiting_rank),
+    total_wins = as.numeric(total_wins),
+    talent_rating = as.numeric(talent_rating),
+    win_pct = total_wins / total_games
+  ) %>%
+  filter(!is.na(recruiting_rank) & !is.na(win_pct), recruiting_rank > 0)
+
+```
+
+
+The plots below highlight the relationship between recruiting rank and win percentage.
+
+```{r}
+# Scatterplot with smoothing line (lower rank is better)
+ggplot(df, aes(x = recruiting_rank, y = win_pct, label = team)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  scale_x_reverse() + # if lower recruiting rank = better, reverse axis for readability
+  labs(
+    title = "Recruiting Rank vs Win Percentage",
+    subtitle = "Lower recruiting rank indicates higher-rated recruiting class",
+    x = "Recruiting Rank (lower is better)",
+    y = "Win Percentage"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+*Interpretation:* Teams with better recruiting ranks (closer to 1) tend to have higher win percentages, though variance increases for mid-ranked teams — suggesting other factors (coaching, player development) matter too - otherwise there would be little parity in sports in general.
+
+```{r}
+# Boxplot by conference
+# Boxplot by conference
+ggplot(df, aes(x = conference, y = win_pct)) +
+  geom_boxplot(outlier.size = 1) +
+  coord_flip() +
+  labs(title = "Win Percentage Distribution by Conference", x = "Conference", y = "Win Percentage") +
+  theme_minimal(base_size = 11)
+
+```
+
+# Regression & Key Findings
+
+Below is a brief linear model quantifies the predictive relationship between recruiting rank and win percentage.
+
+```{r}
+# Simple linear model (win_pct ~ recruiting_rank)
+model <- lm(win_pct ~ recruiting_rank, data = df)
+tidy(model, conf.int = TRUE) %>% print()
+
+summary(model)$r.squared
+glance <- glance(model)
+glance %>% print()
+
+ggplot(df, aes(x = recruiting_rank, y = win_pct)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    title = "Relationship Between Recruiting Rank and Win Percentage",
+    subtitle = paste("R-squared:", round(summary(model)$r.squared, 3)), 
+    x = "Recruiting Rank",
+    y = "Win Percentage"
+  ) +
+  theme_minimal()
+```
+
+---
+
+# Reproducibility & Contact
+
+**For a deeper analysis:** visit my GitHub profile to see the complete project. 
+
+**Contact:** Winston Platt — winstonrplatt@gmail.com — https://github.com/winstonrplatt
+
+---
