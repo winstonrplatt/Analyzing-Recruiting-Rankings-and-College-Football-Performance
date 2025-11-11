@@ -4,3 +4,5 @@
 Output: Quarto / HTML report  
 Project Type: Data visualization and regression analysis  
 This project explores how college football recruiting rankings correlate with on-field performance across FBS programs.
+
+**See the FINALPROJECT.qmd and FINALPROJECT.html files in this repository**
